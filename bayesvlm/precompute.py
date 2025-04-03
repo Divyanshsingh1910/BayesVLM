@@ -62,7 +62,7 @@ def make_predictions(
         torch.save(means, mean_path)
         torch.save(vars, var_path)
 
-    return ProbabilisticLogits(mean=means, var=vars)
+    return ProbabilisticLogits(mean=means, var=vars), means, vars
 
 
 def precompute_image_features(
@@ -74,6 +74,7 @@ def precompute_image_features(
     if save_predictions and cache_dir is None:
         raise ValueError("cache_dir must be provided if save_predictions is True")
     
+    # for now this is None
     if cache_dir is not None:
         if not cache_dir.exists() and save_predictions:
             print(f"Creating cache directory {cache_dir}")
@@ -101,12 +102,18 @@ def precompute_image_features(
     img_ids = []
     labels = []
     for batch in tqdm(loader):
+        print(type(batch))
+        print("[VERBOSE]: Inside the for loops of batch iterations")
         result = image_encoder(batch, return_activations=True)
         img_embeds.append(result.embeds.detach().cpu())
         img_activations.append(result.activations.detach().cpu())
         img_residuals.append(result.residuals.detach().cpu())
-        labels.append(batch["class_id"].cpu())
-        img_ids.append(batch["image_id"].cpu())
+        if(isinstance(batch["class_id"], torch.Tensor)):
+            labels.append(batch["class_id"].cpu())
+            img_ids.append(batch["image_id"].cpu())
+        else:
+            labels.append(batch["class_id"])
+            img_ids.append(batch["image_id"])
 
     embeds = torch.cat(img_embeds, dim=0)
     activations = torch.cat(img_activations, dim=0)

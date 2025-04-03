@@ -13,7 +13,7 @@ from .eurosat import EuroSATDataModule
 from .cifar100 import CIFAR100DataModule
 from .stanfordcars import StanfordCarsDataModule
 from .dtd import DTDDataModule
-from .sun397 import Sun397DataModule
+from .sun397 import SUN397DataModule
 from .oxfordpets import OxfordpetsDataModule
 from .ucf101 import UCF101DataModule
 from .cub import CUBDataModule
@@ -31,7 +31,7 @@ from .homeoffice_da import (
     HomeOfficeDARealWorldDataModule,
 )
 
-from imagenet_wds import ImagenetWDSModule
+from .imagenet_wds import ImagenetWDSModule
 from .imagenet_1k import (
     Imagenet50DataModule,
     Imagenet100DataModule,
@@ -59,7 +59,7 @@ SUPPORTED_MODULES = {
     'cifar100': CIFAR100DataModule,
     'stanfordcars': StanfordCarsDataModule,
     'dtd': DTDDataModule,
-    'sun397': Sun397DataModule,
+    'sun397': SUN397DataModule,
     'oxfordpets': OxfordpetsDataModule,
     'ucf101': UCF101DataModule,
     'cub': CUBDataModule,
