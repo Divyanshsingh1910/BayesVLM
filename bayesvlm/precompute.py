@@ -15,6 +15,58 @@ from bayesvlm.vlm import (
     SiglipTextEncoder,
 )
 
+#  modified function for custom usecases
+def my_make_predictions(
+    clip: CLIP,
+    image_outputs: EncoderResult,
+    text_outputs: EncoderResult,
+    batch_size: int,
+    device: str,
+    save_predictions: bool = False,
+    map_estimate: bool = False,
+    cache_dir: Path = None,
+) -> ProbabilisticLogits:
+    if cache_dir is not None:
+        mean_path = cache_dir / "logits_mean.pt"
+        var_path = cache_dir / "logits_var.pt"
+
+    if cache_dir is not None and mean_path.exists() and var_path.exists():
+        return ProbabilisticLogits(
+            mean=torch.load(mean_path, map_location='cpu'),
+            var=torch.load(var_path, map_location='cpu'),
+        )
+
+    clip = clip.eval().to(device)
+    text_outputs = text_outputs.to(device)
+
+    loader = torch.utils.data.DataLoader(
+        image_outputs,
+        shuffle=False,
+        batch_size=batch_size,
+        num_workers=1,
+    )
+
+    means, vars = [], []
+    for img_embeds, img_activations, img_residuals in tqdm(loader):
+        img_outputs_batch = EncoderResult(
+            embeds=img_embeds.to(device),
+            activations=img_activations.to(device),
+            residuals=img_residuals.to(device),
+        )
+        logits = clip(img_outputs_batch, text_outputs, map_estimate=map_estimate)
+        print(f"[VERBOSE]: logits type: {type(logits)}")
+        print(f"[VERBOSE]: logits shape: {logits.mean.shape}")
+        means.append(logits.mean.detach().cpu())
+        vars.append(logits.var.detach().cpu())
+    means = torch.cat(means, dim=0)
+    vars = torch.cat(vars, dim=0)
+
+    if cache_dir is not None and save_predictions:
+        torch.save(means, mean_path)
+        torch.save(vars, var_path)
+
+    return ProbabilisticLogits(mean=means, var=vars)
+
 def make_predictions(
     clip: CLIP,
     image_outputs: EncoderResult,
@@ -62,7 +114,7 @@ def make_predictions(
         torch.save(means, mean_path)
         torch.save(vars, var_path)
 
-    return ProbabilisticLogits(mean=means, var=vars), means, vars
+    return ProbabilisticLogits(mean=means, var=vars)
 
 
 def precompute_image_features(

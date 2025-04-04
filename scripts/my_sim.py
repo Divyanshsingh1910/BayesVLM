@@ -1,4 +1,5 @@
 import argparse
+import os, json
 from typing import Tuple
 
 import torch
@@ -11,7 +12,7 @@ sys.path.append('.') # add bayesvlm to path
 
 from bayesvlm.data.factory import DataModuleFactory
 from bayesvlm.hessians import load_hessians, compute_covariances, optimize_prior_precision
-from bayesvlm.precompute import precompute_image_features, precompute_text_features, make_predictions
+from bayesvlm.precompute import precompute_image_features, precompute_text_features, my_make_predictions
 from bayesvlm.constants import MODEL_NAME_MAP
 from bayesvlm.utils import get_model_type_and_size, get_image_size, get_transform, load_model
 
@@ -134,29 +135,37 @@ def main(
     
 
     print("[1] Optimizing prior precision...")
-    info['lambda_img'] = optimize_prior_precision(
-        image_encoder.vision_projection,
-        A=A_img,
-        B=B_img,
-        lmbda_init=300,
-        n=info['n_img'],
-        lr=1e-2,
-        num_steps=1000,
-        device=device,
-        verbose=False,
-    ).item()
+    # if prior_precision_info.json file exists then just load the values
+    # else optimize the prior precision
+    if os.path.exists(os.path.join(hessian_dir, 'prior_precision_analytic.json')):
+        with open(os.path.join(hessian_dir, 'prior_precision_analytic.json')) as f:
+            temp = json.load(f)
+            info['lambda_img'] = temp['lambda_img']
+            info['lambda_txt'] = temp['lambda_txt']
+    else:
+        info['lambda_img'] = optimize_prior_precision(
+            image_encoder.vision_projection,
+            A=A_img,
+            B=B_img,
+            lmbda_init=300,
+            n=info['n_img'],
+            lr=1e-2,
+            num_steps=1000,
+            device=device,
+            verbose=False,
+        ).item()
 
-    info['lambda_txt'] = optimize_prior_precision(
-        text_encoder.text_projection,
-        A=A_txt,
-        B=B_txt,
-        lmbda_init=300,
-        n=info['n_txt'],
-        lr=1e-2,
-        num_steps=1000,
-        device=device,
-        verbose=False,
-    ).item()
+        info['lambda_txt'] = optimize_prior_precision(
+            text_encoder.text_projection,
+            A=A_txt,
+            B=B_txt,
+            lmbda_init=300,
+            n=info['n_txt'],
+            lr=1e-2,
+            num_steps=1000,
+            device=device,
+            verbose=False,
+        ).item()
     print("\tn_img:", info['n_img'])
     print("\tn_txt:", info['n_txt'])
     print("\tlambda_img:", info['lambda_img'])
@@ -182,7 +191,7 @@ def main(
         print("[VERBOSE]: Both image and label outputs generated successfully!")
 
         print("[3] Making predictions...")
-        prob_logits_test, means, vars = make_predictions(
+        prob_logits_test = my_make_predictions(
             clip=vlm,
             image_outputs=image_outputs_test,
             text_outputs=label_outputs,
@@ -190,8 +199,8 @@ def main(
             device=device,
         )
 
-        print(f"Means: {means}")
-        print(f"Vars: {vars}")
+        print(f"Means: {prob_logits_test.mean}")
+        print(f"Vars: {prob_logits_test.var}")
 
     # probit approximation
     kappa = 1 / torch.sqrt(1. + torch.pi / 8 * prob_logits_test.var)
