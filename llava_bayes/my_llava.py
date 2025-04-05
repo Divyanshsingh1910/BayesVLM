@@ -4,8 +4,8 @@ import torch
 import requests
 from PIL import Image
 from transformers import AutoProcessor, LlavaConfig # Assuming LlavaConfig is needed by your custom model
-from modelling_llava import LlavaForConditionalGeneration, LlavaCausalLMOutputWithPast
-from configuration_llava import LlavaConfig
+from transformers.models.llava.modeling_llava import LlavaForConditionalGeneration, LlavaCausalLMOutputWithPast
+from transformers.models.llava.configuration_llava import LlavaConfig
 
 from transformers.utils import (
     # add_start_docstrings,
@@ -25,6 +25,27 @@ class CustomLlavaModel(LlavaForConditionalGeneration):
         print(f"input_ids shape: {self.input_ids.shape}")
         exit(0)
         return self.input_ids
+
+    def my_get_image_features(
+        self,
+        pixel_values: torch.FloatTensor,
+        vision_feature_layer: Union[int, List[int]],
+        vision_feature_select_strategy: Optional[str] = None,
+        image_sizes: Optional[torch.Tensor] = None,
+    ) -> torch.FloatTensor:
+        """
+        This should run the BayesVLM and return a sampled image feature of the input image.
+        The projection layers should be from the Llava model since they have trained the 
+        weights of these projection layers while keeping the rest image encoder frozen.
+        Args:
+            pixel_values: The pixel values of the images. example: torch.Size([1, 3, 336, 336])
+            vision_feature_layer: The layer(s) from which to extract features.
+            vision_feature_select_strategy: The strategy for selecting features.
+            image_sizes: The sizes of the images.
+        Returns:
+            The extracted image features.
+        """
+        pass
 
     def forward(
         self,
@@ -48,6 +69,7 @@ class CustomLlavaModel(LlavaForConditionalGeneration):
     ) -> Union[Tuple, LlavaCausalLMOutputWithPast]:
 
         self.input_ids = input_ids
+        print("This is the updated version!")
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -74,14 +96,15 @@ class CustomLlavaModel(LlavaForConditionalGeneration):
             inputs_embeds = self.get_input_embeddings()(input_ids)
 
         if pixel_values is not None:
-            image_features = self.get_image_features(
+            # this is where the image_features will sampled
+            image_features = self.my_get_image_features(
                 pixel_values=pixel_values,
                 vision_feature_layer=vision_feature_layer,
                 vision_feature_select_strategy=vision_feature_select_strategy,
                 image_sizes=image_sizes,
             )
-            print(f"image_features: {type(image_features)}, {image_features.shape}")
-            print(f"pixel_values: {type(pixel_values)}, {pixel_values.shape}")
+            print(f"image_features: {type(image_features)}, {image_features.shape}") # Tensor, torch.Size([1, 576, 4096])
+            print(f"pixel_values: {type(pixel_values)}, {pixel_values.shape}") # Tensor, torch.Size([1, 3, 336, 336])
             print(f"image_sizes: {type(image_sizes)}, {image_sizes}")
 
             special_image_mask = (input_ids == self.config.image_token_index).unsqueeze(-1)
@@ -98,6 +121,13 @@ class CustomLlavaModel(LlavaForConditionalGeneration):
             print(f"inputs_embeds: {type(inputs_embeds)}, {inputs_embeds.shape}")
             print(f"image_features: {type(image_features)}, {image_features.shape}")
 
+        print("pixel_values is None: --> should happen couple of times!")
+        print(f"inputs_embeds: {type(inputs_embeds)}, {inputs_embeds.shape}")
+        print(type(position_ids))
+        print(position_ids) # this keeps +=1 on generation of each token
+        print(type(past_key_values))
+        print(past_key_values)
+
         outputs = self.language_model(
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -111,6 +141,8 @@ class CustomLlavaModel(LlavaForConditionalGeneration):
             logits_to_keep=logits_to_keep,
             **lm_kwargs,
         )
+
+        print(f"outputs from the LM: {type(outputs)}, {outputs}")
 
         logits = outputs[0]
 
