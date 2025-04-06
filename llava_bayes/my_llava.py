@@ -15,6 +15,11 @@ from transformers.utils import (
     # replace_return_docstrings,
 )
 
+import os, json, sys 
+sys.path.append(".")
+sys.path.append("..")
+from bayesvlm.hessians import load_hessians, compute_covariances, optimize_prior_precision
+
 class CustomLlavaModel(LlavaForConditionalGeneration):
     def __init__(self, config: LlavaConfig):
         super().__init__(config)
@@ -25,6 +30,50 @@ class CustomLlavaModel(LlavaForConditionalGeneration):
         print(f"input_ids shape: {self.input_ids.shape}")
         exit(0)
         return self.input_ids
+        
+
+    def get_img_cov_matrix(self):
+        """
+        Compute and return covariance matrix for distributino of projector layers
+
+        Args:
+            None
+        Returns: 
+            returns the covariance matrix
+        """
+        
+        A_img, B_img = load_hessians(self.hessian_dir, tag='img', return_info=False)
+
+        print("[1] Optimizing prior precision...")
+        info = {
+            'n_img': self.pseudo_data_count,
+            'n_txt': self.pseudo_data_count,
+        }
+        # if prior_precision_info.json file exists then just load the values
+        # else optimize the prior precision
+        if os.path.exists(os.path.join(self.hessian_dir, 'prior_precision_analytic.json')):
+            with open(os.path.join(self.hessian_dir, 'prior_precision_analytic.json')) as f:
+                temp = json.load(f)
+                info['lambda_img'] = temp['lambda_img']
+                info['lambda_txt'] = temp['lambda_txt']
+        else:
+            info['lambda_img'] = optimize_prior_precision(
+                self.multi_modal_projector,
+                A=A_img,
+                B=B_img,
+                lmbda_init=300,
+                n=info['n_img'],
+                lr=1e-2,
+                num_steps=1000,
+                device=self.device,
+                verbose=False,
+            ).item()
+
+        print("\tn_img:", info['n_img'])
+        print("\tlambda_img:", info['lambda_img'])
+
+        cov_img = compute_covariances(A_img, B_img, info)
+        return cov_img
 
     def my_get_image_features(
         self,
@@ -37,15 +86,59 @@ class CustomLlavaModel(LlavaForConditionalGeneration):
         This should run the BayesVLM and return a sampled image feature of the input image.
         The projection layers should be from the Llava model since they have trained the 
         weights of these projection layers while keeping the rest image encoder frozen.
-        Args:
-            pixel_values: The pixel values of the images. example: torch.Size([1, 3, 336, 336])
-            vision_feature_layer: The layer(s) from which to extract features.
-            vision_feature_select_strategy: The strategy for selecting features.
-            image_sizes: The sizes of the images.
-        Returns:
-            The extracted image features.
         """
-        pass
+        """
+        Obtains image last hidden states from the vision tower and apply multimodal projection.
+
+        Args:
+            pixel_values (`torch.FloatTensor]` of shape `(batch_size, channels, height, width)`)
+               The tensors corresponding to the input images.
+            vision_feature_layer (`Union[int, List[int]]`):
+                The index of the layer to select the vision feature. If multiple indices are provided,
+                the vision feature of the corresponding indices will be concatenated to form the
+                vision features.
+            vision_feature_select_strategy (`str`):
+                The feature selection strategy used to select the vision feature from the vision backbone.
+                Can be one of `"default"` or `"full"`
+        Returns:
+            image_features (`torch.Tensor`): Image feature tensor of shape `(num_images, image_length, embed_dim)`).
+        """
+        if vision_feature_select_strategy not in ["default", "full"]:
+            raise ValueError(f"Unexpected select feature strategy: {self.config.vision_feature_select_strategy}")
+
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        # this is not memory efficient at all (output_hidden_states=True) will save all the hidden states.
+        image_outputs = self.vision_tower(pixel_values, output_hidden_states=True, **kwargs)
+
+        # If we have one vision feature layer, return the corresponding hidden states,
+        # otherwise, select the hidden states of each feature layer and concatenate them
+        if isinstance(vision_feature_layer, int):
+            selected_image_feature = image_outputs.hidden_states[vision_feature_layer]
+            if vision_feature_select_strategy == "default":
+                selected_image_feature = selected_image_feature[:, 1:]
+        else:
+            hs_pool = [image_outputs.hidden_states[layer_idx] for layer_idx in vision_feature_layer]
+            # For default; crop CLS from each hidden state in the hidden state pool
+            if vision_feature_select_strategy == "default":
+                hs_pool = [hs[:, 1:] for hs in hs_pool]
+            selected_image_feature = torch.cat(hs_pool, dim=-1)
+
+        # we change this apply our own projection layer
+        print(f"selected_image_feature: {type(selected_image_feature)}, {selected_image_feature.shape}") 
+        image_features = self.multi_modal_projector(selected_image_feature)
+
+        Hack_Llava = False
+        if Hack_Llava:
+            mean_img_embed = image_features.squeeze(0) #\mu 
+            img_cov_matrix = self.get_img_cov_matrix() #\Sigma 
+
+            embed_distribution = torch.distributions.MultivariateNormal(mean_img_embed, img_cov_matrix)
+
+            sampled_img_embed = embed_distribution.sample() #\tilde{x}
+            sampled_img_embed = sampled_img_embed.unsqueeze(0)
+            return sampled_img_embed
+
+        return image_features
 
     def forward(
         self,
